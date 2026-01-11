@@ -46,14 +46,31 @@ class TavlaInputs(transforms.DataTransformFn):
             "base_0_rgb": np.True_,
         }
 
+        # # Add the extra images.
+        # extra_image_names = {
+        #     "left_wrist_0_rgb": "cam_left_wrist",
+        #     "right_wrist_0_rgb": "cam_right_wrist",
+        # }
+        # for dest, source in extra_image_names.items():
+        #     images[dest] = _parse_image(in_images[source])
+        #     image_masks[dest] = np.True_
+
+
         # Add the extra images.
         extra_image_names = {
             "left_wrist_0_rgb": "cam_left_wrist",
             "right_wrist_0_rgb": "cam_right_wrist",
         }
         for dest, source in extra_image_names.items():
-            images[dest] = _parse_image(in_images[source])
-            image_masks[dest] = np.True_
+            if source in in_images:
+                # 情况 1: 数据里有这个相机 -> 正常读取，Mask=True
+                images[dest] = _parse_image(in_images[source])
+                image_masks[dest] = np.True_
+            else:
+                # 情况 2: 数据里没有这个相机 -> 填全黑图，Mask=False (告诉模型忽略它)
+                # 使用 base_image 的形状来创建全黑图 (H, W, C)
+                images[dest] = np.zeros_like(base_image)
+                image_masks[dest] = np.False_
 
         inputs = {
             "image": images,
@@ -81,5 +98,5 @@ class TavlaOutputs(transforms.DataTransformFn):
 
     def __call__(self, data: dict) -> dict:
         # Only return the first 14 dims.
-        actions = np.asarray(data["actions"][:, :14])
+        actions = np.asarray(data["actions"][:, :10])
         return {"actions": actions}

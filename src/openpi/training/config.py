@@ -10,7 +10,8 @@ from typing import Any, Protocol, TypeAlias
 
 import etils.epath as epath
 import flax.nnx as nnx
-from lerobot.common.datasets.lerobot_dataset import LEROBOT_HOME
+#from lerobot.common.datasets.lerobot_dataset import LEROBOT_HOME
+from lerobot.common.datasets.lerobot_dataset import HF_LEROBOT_HOME as LEROBOT_HOME
 from lerobot.common.datasets.utils import load_info
 from lerobot.common.datasets.utils import load_tasks
 import numpy as np
@@ -509,6 +510,216 @@ class LeRobotTavlaDataConfig(DataConfigFactory):
 
 
 @dataclasses.dataclass(frozen=True)
+class MyFrankaTavlaDataConfig(DataConfigFactory):
+    """
+    专门适配 Franka 数据集的 TA-VLA 配置。
+    结合了 MyFrankaDataConfig 的键值映射和 LeRobotTavlaDataConfig 的力矩处理逻辑。
+    """
+    # 【TA-VLA 参数】是否使用 Delta 动作（不包含夹爪）
+    use_delta_actions: bool = False
+    
+    # 【用户参数】你的数据集 ID
+    repo_id: str = "wmx/openpi_red_fixed_50"
+    
+    # 【用户参数】Prompt
+    default_prompt: str | None = None
+    
+    # 【TA-VLA 参数】Norm Stats padding，通常设为 False 即可
+    padding_stat: bool = False   #TODO:
+
+    # 【TA-VLA 核心】力矩历史帧采样。例如 (-20, -10, 0)
+    # 如果为空 tuple ()，则不加载力矩数据
+    effort_history: Sequence[int] = ()
+
+    # Repack transform，将在 __post_init__ 中自动配置
+    repack_transforms: tyro.conf.Suppress[_transforms.Group] = dataclasses.field(default=_transforms.Group())
+    
+    # 【修正】指定读取数据集里的 "action" 列
+    action_sequence_keys: Sequence[str] = ("action",)
+
+    def __post_init__(self):
+        # 1. 定义图像映射：将你的数据集 Key 映射到 TavlaInputs 期望的标准 Key
+        # 注意：TavlaInputs 默认代码里强制要求有 cam_high, cam_left_wrist, cam_right_wrist
+        # 如果你只有 image 和 image2，我们需要做一下映射防止 KeyError
+        images = {
+            # Tavla 期望的 Key   : 你数据集的 Key
+            "cam_high":          "observation.images.image",   # 对应你的主摄
+            "cam_left_wrist":    "observation.images.image2",  # 对应你的腕部
+            #"cam_right_wrist":   "observation.images.image3",
+        }
+
+        repack_dict = {
+            "images": images,
+            "state": "observation.state",
+            "actions": "action", # 对应你数据集的 action
+        }
+
+        # 2. 处理 Prompt
+        if self.default_prompt is None:
+            repack_dict["prompt"] = "prompt"
+
+        # 3. 【核心】如果有 effort_history，则映射力矩数据
+        # 确保你的数据集中有 "observation.effort" 这一列
+        if self.effort_history:
+            repack_dict["effort"] = "observation.effort"
+
+        # 4. 构建 Repack Group
+        # 由于 dataclass 是 frozen 的，需要用 object.__setattr__ 绕过
+        object.__setattr__(
+            self,
+            "repack_transforms",
+            _transforms.Group(
+                inputs=[
+                    _transforms.RepackTransform(
+                        repack_dict
+                    )
+                ]
+            ),
+        )
+
+    @override
+    def create(self, assets_dirs: pathlib.Path, model_config: _model.BaseModelConfig) -> DataConfig:
+        # 1. 使用 TavlaInputs (TA-VLA 专用的输入处理器)
+        data_transforms = _transforms.Group(
+            inputs=[
+                tavla_policy.TavlaInputs(
+                    action_dim=model_config.action_dim,
+                )
+            ],
+            outputs=[tavla_policy.TavlaOutputs()],
+        )
+
+        if self.use_delta_actions:
+            delta_action_mask = _transforms.make_bool_mask(9, -1) # 7动1不动
+            data_transforms = data_transforms.push(
+                inputs=[_transforms.DeltaActions(delta_action_mask)],
+                outputs=[_transforms.AbsoluteActions(delta_action_mask)],
+            )
+
+        # 3. 检查多数据集 Prompt 冲突
+        if self.default_prompt and isinstance(self.repo_id, list):
+            raise ValueError("Using default prompt when using multiple dataset is incorrect.")
+
+        model_transforms = ModelTransformFactory(default_prompt=self.default_prompt)(model_config)
+
+        # 4. 返回最终配置
+        return dataclasses.replace(
+            # 复用 LeRobotTavlaDataConfig 或 DataConfigFactory 的基类逻辑加载 norm_stats
+            # 这里直接调用基类方法即可，假设你继承自 DataConfigFactory
+            self.create_base_config(assets_dirs),
+            repack_transforms=self.repack_transforms,
+            data_transforms=data_transforms,
+            model_transforms=model_transforms,
+            action_sequence_keys=self.action_sequence_keys,
+            effort_history=self.effort_history,
+            prompt_from_task=(self.default_prompt is None),
+        )
+    
+    # 5. 复用 TA-VLA 的 norm_stats 加载逻辑 (直接复制 LeRobotTavlaDataConfig 的这个方法)
+    def _load_norm_stats(
+        self, assets_dir: epath.Path, asset_id: str | list[str] | None
+    ) -> dict[str, _transforms.NormStats] | None:
+
+        if asset_id is None:
+            return None
+
+        try:
+            if isinstance(asset_id, list): #多数据集融合时，计算一个通用的“世界均值”和“世界方差”
+                key_stats_map = {"state": [], "actions": []}  # key -> [(task, norm_stats, frame_count)]
+
+                for asset in asset_id:
+                    data_assets_dir = str(assets_dir / asset)
+                    stats = _normalize.load(_download.maybe_download(data_assets_dir))
+
+                    dataset_path = LEROBOT_HOME / asset
+                    info = load_info(dataset_path)
+                    frame_count = info["total_frames"]
+
+                    task = load_tasks(dataset_path)
+                    assert len(task) == 1, f"dataset {asset} has {len(task)} tasks"
+
+                    logging.info(f"Loaded norm stats from {data_assets_dir} with {frame_count} frames")
+
+                    for key in stats:
+                        key_stats_map[key].append((task[0], stats[key], frame_count))
+
+                all_stats = {}
+                for data_key, relevant_stats in key_stats_map.items():
+                    logging.info(f"combine {data_key} from {len(relevant_stats)} datasets:")
+
+                    for task, stat, count in relevant_stats:
+                        logging.info(f"dataset {task} (frame count: {count}):")
+                        logging.info(
+                            f"  mean: {np.array2string(stat[data_key].mean, precision=2, suppress_small=True)}"
+                        )
+                        logging.info(f"  std: {np.array2string(stat[data_key].std, precision=2, suppress_small=True)}")
+                        logging.info(f"  q01: {np.array2string(stat[data_key].q01, precision=2, suppress_small=True)}")
+                        logging.info(f"  q99: {np.array2string(stat[data_key].q99, precision=2, suppress_small=True)}")
+
+                    total_frames = sum(count for _, count in relevant_stats)
+
+                    mean = np.sum(
+                        np.array([stats[data_key].mean * (count / total_frames) for stats, count in relevant_stats]),
+                        axis=0,
+                    )
+                    std = np.sqrt(
+                        np.sum(
+                            [
+                                (stats[data_key].std ** 2 + (stats[data_key].mean - mean) ** 2) * (count / total_frames)
+                                for stats, count in relevant_stats
+                            ]
+                        )
+                    )
+
+                    q01 = np.minimum.reduce([stats[data_key].q01 for stats, _ in relevant_stats])
+                    q99 = np.maximum.reduce([stats[data_key].q99 for stats, _ in relevant_stats])
+
+                    logging.info("after combine:")
+                    logging.info(f"  mean: {np.array2string(mean, precision=2, suppress_small=True)}")
+                    logging.info(f"  std: {np.array2string(std, precision=2, suppress_small=True)}")
+                    logging.info(f"  q01: {np.array2string(q01, precision=2, suppress_small=True)}")
+                    logging.info(f"  q99: {np.array2string(q99, precision=2, suppress_small=True)}")
+
+                    all_stats[data_key] = _transforms.NormStats(
+                        mean=mean,
+                        std=std,
+                        q01=q01,
+                        q99=q99,
+                    )
+            else:
+                data_assets_dir = str(assets_dir / asset_id)
+                all_stats = _normalize.load(_download.maybe_download(data_assets_dir))
+                logging.info(f"Loaded norm stats from {data_assets_dir}")
+
+            # if self.padding_stat:
+            #     for data_key in all_stats:
+            #         all_stats[data_key] = _transforms.NormStats(
+            #             mean=_transforms.pad_to_dim(all_stats[data_key].mean, 32),
+            #             std=_transforms.pad_to_dim(all_stats[data_key].std, 32),
+            #             q01=_transforms.pad_to_dim(all_stats[data_key].q01, 32),
+            #             q99=_transforms.pad_to_dim(all_stats[data_key].q99, 32),
+            #         )
+
+            if self.padding_stat:
+                for data_key in all_stats:
+                    # 【核心修复】Effort 不需要 Pad，保持 7 维；只有 state 和 actions 需要 Pad 到 32
+                    if data_key == "effort":
+                        continue
+                    
+                    all_stats[data_key] = _transforms.NormStats(
+                        mean=_transforms.pad_to_dim(all_stats[data_key].mean, 32),
+                        std=_transforms.pad_to_dim(all_stats[data_key].std, 32),
+                        q01=_transforms.pad_to_dim(all_stats[data_key].q01, 32),
+                        q99=_transforms.pad_to_dim(all_stats[data_key].q99, 32),
+                    )
+
+            return all_stats
+        except FileNotFoundError:
+            logging.warning(f"Norm stats not found in {data_assets_dir}, skipping.")
+            return None
+            
+
+@dataclasses.dataclass(frozen=True)
 class TrainConfig:
     # Name of the config. Must be unique. Will be used to reference this config.
     name: tyro.conf.Suppress[str]
@@ -812,6 +1023,51 @@ _CONFIGS = [
         weight_loader=weight_loaders.CheckpointWeightLoader("s3://openpi-assets/checkpoints/pi0_base/params"),
         num_train_steps=20_000,
     ),
+
+
+    TrainConfig(
+        name="pi0_tavla_franka_lora",
+        keep_period=1000,
+        # 【修改 1】指定 LoRA 变体，并设置 Franka 维度 (7) 和 Force 类型
+        model=pi0.Pi0Config(
+            paligemma_variant="gemma_2b_lora",      # 匹配示例
+            action_expert_variant="gemma_300m_lora",# 匹配示例
+            
+            effort_type=EffortType.EXPERT_HIS_C_L_FUT,    # 你的力矩输入类型
+            
+            # 【关键保留】虽然示例没写，但 Franka 必须写，否则维度报错
+            effort_dim=7, 
+            action_dim=32,
+            action_horizon=30,
+        ),
+        
+        data=MyFrankaTavlaDataConfig(
+            repo_id="wmx/openpi_red_fixed_50",
+            # 配合 EXPERT_HIS_C，使用历史帧
+            effort_history=(-20, -10, 0), 
+            default_prompt="Put the object into the basket",
+            use_delta_actions=False, # 注意 MyFrankaTavlaDataConfig 里定义的参数名是否是 use_delta_actions
+            
+            # 本地数据集设置
+            base_config=DataConfig(
+                #local_files_only=True,
+                prompt_from_task=True,
+            ),
+        ),
+        
+        weight_loader=weight_loaders.CheckpointWeightLoader( "/work/openpi_base_ckpt/openpi-assets/checkpoints/pi0_base/params"),
+        num_train_steps=100_000,
+        batch_size=192,
+
+        # 【修改 2】添加 Freeze Filter，冻结非 LoRA 参数
+        freeze_filter=pi0.Pi0Config(
+            paligemma_variant="gemma_2b_lora", 
+            action_expert_variant="gemma_300m_lora"
+        ).get_freeze_filter(),
+        
+        # 【修改 3】LoRA 通常关闭 EMA
+        ema_decay=None, 
+    ),
     
     TrainConfig(
         name="pi0_lora_baseline",
@@ -869,6 +1125,11 @@ _CONFIGS = [
         ).get_freeze_filter(),
         ema_decay=None,
     ),
+    
+     
+     
+     
+     
     # This config is used to demonstrate how to train on a simple simulated environment.
     TrainConfig(
         name="pi0_aloha_sim",
