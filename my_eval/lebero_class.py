@@ -1,12 +1,12 @@
+from lerobot.envs.utils import preprocess_observation
+from lerobot.policies.factory import make_policy
+from lerobot.policies.factory import make_pre_post_processors
+import numpy as np
 import torch
 from torch import nn
-import numpy as np
-from vlaresidual.utils.train_utils import fold_time_dim, unfold_time_dim, decode_task_description_from_obs
-
-from lerobot.policies.factory import make_policy, make_pre_post_processors
-from lerobot.envs.utils import (
-    preprocess_observation,
-)
+from vlaresidual.utils.train_utils import decode_task_description_from_obs
+from vlaresidual.utils.train_utils import fold_time_dim
+from vlaresidual.utils.train_utils import unfold_time_dim
 
 
 class OpenPi(nn.Module):
@@ -25,7 +25,7 @@ class OpenPi(nn.Module):
             preprocessor_overrides={
                 "device_processor": {"device": str(self.policy.config.device)},
                 "rename_observations_processor": {"rename_map": cfg.rename_map},
-            }
+            },
         )
 
         self.preprocessor = preprocessor
@@ -38,7 +38,7 @@ class OpenPi(nn.Module):
         # 获取设备
         self.device = self.policy.config.device
 
-        print(f"✓ PI05Policy 初始化完成")
+        print("✓ PI05Policy 初始化完成")
         print(f"  - n_action_steps: {self.policy.config.n_action_steps}")
         print(f"  - chunk_size: {self.policy.config.chunk_size}")
 
@@ -49,9 +49,9 @@ class OpenPi(nn.Module):
         """
         if isinstance(x, torch.Tensor):
             return x.detach().cpu().numpy()
-        elif isinstance(x, dict):
+        if isinstance(x, dict):
             return {k: self._recursive_to_numpy(v) for k, v in x.items()}
-        elif isinstance(x, list):
+        if isinstance(x, list):
             return [self._recursive_to_numpy(v) for v in x]
         return x
 
@@ -70,7 +70,7 @@ class OpenPi(nn.Module):
                 # 如果是浮点数
                 if x.dtype in [np.float32, np.float64]:
                     # 检查是否被归一化到了 [0, 1]
-                    if x.max() <= 1.05: # 留点误差空间
+                    if x.max() <= 1.05:  # 留点误差空间
                         x = x * 255.0
 
                     # 强制转为 uint8
@@ -87,7 +87,7 @@ class OpenPi(nn.Module):
         """
         if task is not None:
             if isinstance(observation, dict):
-                observation['task'] = task
+                observation["task"] = task
             else:
                 raise ValueError("Observation should be a dict to add task description.")
         return observation
@@ -163,7 +163,7 @@ class OpenPi(nn.Module):
                 self.batch_size = len(tasks)
             else:
                 # Fallback logic
-                self.batch_size = 1 # TODO： 确认batch_size是否正确
+                self.batch_size = 1  # TODO： 确认batch_size是否正确
             self.action_queue = [[] for _ in range(self.batch_size)]
 
         # 检查是否需要预测新的 action chunk
@@ -189,7 +189,7 @@ class OpenPi(nn.Module):
 
     def reset(self):
         """重置策略状态（包括 action queue）"""
-        if hasattr(self.policy, 'reset'):
+        if hasattr(self.policy, "reset"):
             self.policy.reset()
         if self.action_queue is not None:
             self.action_queue = [[] for _ in range(self.batch_size)]

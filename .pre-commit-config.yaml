@@ -1,3 +1,4 @@
+
 exclude: third_party/
 
 repos:
@@ -12,5 +13,5 @@ repos:
     hooks:
       # Run the linter.
       - id: ruff
-        args: [--fix]
+        args: [--fix, --ignore=RUF]  # 忽略所有 RUF 开头的错误（包括001/003
       - id: ruff-format

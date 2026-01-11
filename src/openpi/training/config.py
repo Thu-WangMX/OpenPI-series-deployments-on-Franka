@@ -7,6 +7,7 @@ import difflib
 import logging
 import pathlib
 from typing import Any, Literal, Protocol, TypeAlias
+import numpy as np
 
 import etils.epath as epath
 import flax.nnx as nnx
@@ -353,15 +354,17 @@ class LeRobotLiberoDataConfig(DataConfigFactory):
             model_transforms=model_transforms,
         )
 
-#用于pi0,pi05+franka的SFT
+
+# 用于pi0,pi05+franka的SFT
 @dataclasses.dataclass(frozen=True)
 class MyFrankaDataConfig(DataConfigFactory):
     # 【修改 1】改为 True，开启 Delta 转换功能
     use_delta_actions: bool = False
-    
+
     # 【修改 2】你的数据集 ID (请确保和转换脚本里的一致)
     repo_id: str = "wmx/openpi_red_1227_205_clean"
     default_prompt: str | None = None
+
     @override
     def create(self, assets_dirs: pathlib.Path, model_config: _model.BaseModelConfig) -> DataConfig:
         # 【修改 3】Repack 映射：左边不动，右边必须对应你转换脚本生成的 Key
@@ -370,11 +373,11 @@ class MyFrankaDataConfig(DataConfigFactory):
                 _transforms.RepackTransform(
                     {
                         # 左边 (模型输入名)      : 右边 (数据集列名)
-                        "observation/image": "observation.images.image",   # 对应你数据的 image
-                        "observation/wrist_image": "observation.images.image2", # 对应你数据的 image2
+                        "observation/image": "observation.images.image",  # 对应你数据的 image
+                        "observation/wrist_image": "observation.images.image2",  # 对应你数据的 image2
                         "observation/state": "observation.state",
-                        "actions": "action",   # 对应你数据的 action (7维)
-                        "prompt": "prompt",      # 对应你数据的 task
+                        "actions": "action",  # 对应你数据的 action (7维)
+                        "prompt": "prompt",  # 对应你数据的 task
                     }
                 )
             ]
@@ -389,7 +392,7 @@ class MyFrankaDataConfig(DataConfigFactory):
         # 【修改 4】删除或禁用了 DeltaActions 逻辑
         # 因为 use_delta_actions=False，所以不要把 Delta 变换加进去
         if self.use_delta_actions:
-            delta_action_mask = _transforms.make_bool_mask(9, -1) # 7动1不动
+            delta_action_mask = _transforms.make_bool_mask(9, -1)  # 7动1不动
             data_transforms = data_transforms.push(
                 inputs=[_transforms.DeltaActions(delta_action_mask)],
                 outputs=[_transforms.AbsoluteActions(delta_action_mask)],
@@ -412,15 +415,16 @@ class MyFrankaTavlaDataConfig(DataConfigFactory):
     专门适配 Franka 数据集的 TA-VLA 配置。
     结合了 MyFrankaDataConfig 的键值映射和 LeRobotTavlaDataConfig 的力矩处理逻辑。
     """
+
     # 【TA-VLA 参数】是否对关节使用 Delta 动作（不包含夹爪）
     use_delta_actions: bool = True
-    
+
     # 【用户参数】你的数据集 ID
-    repo_id: str = "wmx/openpi_merged_single_grasp_newest"#TODO:
-    
+    repo_id: str = "wmx/openpi_merged_single_grasp_newest"  # TODO:
+
     # 【用户参数】Prompt
     default_prompt: str | None = None
-    
+
     # 【TA-VLA 参数】Norm Stats padding，通常设为 False 即可
     padding_stat: bool = False
 
@@ -430,7 +434,7 @@ class MyFrankaTavlaDataConfig(DataConfigFactory):
 
     # Repack transform，将在 __post_init__ 中自动配置
     repack_transforms: tyro.conf.Suppress[_transforms.Group] = dataclasses.field(default=_transforms.Group())
-    
+
     # 【修正】指定读取数据集里的 "action" 列
     action_sequence_keys: Sequence[str] = ("action",)
 
@@ -440,19 +444,18 @@ class MyFrankaTavlaDataConfig(DataConfigFactory):
         # 如果你只有 image 和 image2，我们需要做一下映射防止 KeyError
         images = {
             # Tavla 期望的 Key   : 你数据集的 Key
-            "cam_high":          "observation.images.image",   # 对应你的主摄
-            "cam_left_wrist":    "observation.images.image2",  # 对应你的腕部
-            
+            "cam_high": "observation.images.image",  # 对应你的主摄
+            "cam_left_wrist": "observation.images.image2",  # 对应你的腕部
             # 【Hack】TavlaInputs 代码里硬编码了读取 right_wrist。
             # 如果你没有右腕相机，这里暂时指向 image2 占位，防止训练报错。
             # 如果你有真实的右腕数据，请修改这里。
-            "cam_right_wrist":   "observation.images.image2",#TODO
+            "cam_right_wrist": "observation.images.image2",  # TODO
         }
 
         repack_dict = {
             "images": images,
             "state": "observation.state",
-            "actions": "action", # 对应你数据集的 action
+            "actions": "action",  # 对应你数据集的 action
         }
 
         # 2. 处理 Prompt
@@ -469,13 +472,7 @@ class MyFrankaTavlaDataConfig(DataConfigFactory):
         object.__setattr__(
             self,
             "repack_transforms",
-            _transforms.Group(
-                inputs=[
-                    _transforms.RepackTransform(
-                        repack_dict
-                    )
-                ]
-            ),
+            _transforms.Group(inputs=[_transforms.RepackTransform(repack_dict)]),
         )
 
     @override
@@ -494,7 +491,7 @@ class MyFrankaTavlaDataConfig(DataConfigFactory):
         # 【重要修改】这里改回 7，适配 Franka (7关节 + 1夹爪)
         # TA-VLA 源码默认是 6 (Aloha)，直接用会导致维度错误
         if self.use_delta_actions:
-            delta_action_mask = _transforms.make_bool_mask(7, -1) # 7动1不动
+            delta_action_mask = _transforms.make_bool_mask(7, -1)  # 7动1不动
             data_transforms = data_transforms.push(
                 inputs=[_transforms.DeltaActions(delta_action_mask)],
                 outputs=[_transforms.AbsoluteActions(delta_action_mask)],
@@ -518,7 +515,7 @@ class MyFrankaTavlaDataConfig(DataConfigFactory):
             effort_history=self.effort_history,
             prompt_from_task=(self.default_prompt is None),
         )
-    
+
     # 5. 复用 TA-VLA 的 norm_stats 加载逻辑 (直接复制 LeRobotTavlaDataConfig 的这个方法)
     def _load_norm_stats(
         self, assets_dir: epath.Path, asset_id: str | list[str] | None
@@ -945,144 +942,112 @@ _CONFIGS = [
         # Turn off EMA for LoRA finetuning.
         ema_decay=None,
     ),
-
-
     # ================= Franka SFT (LoRA) 配置 =================
     TrainConfig(
-     
         name="pi0_franka_low_mem_finetune",
         keep_period=1000,
         # 模型：沿用 π0 LoRA 结构
         model=pi0_config.Pi0Config(
             paligemma_variant="gemma_2b_lora",
             action_expert_variant="gemma_300m_lora",
-        
-            action_dim=32,        
-            action_horizon=30, #与数采频率保持一致！！！
+            action_dim=32,
+            action_horizon=30,  # 与数采频率保持一致！！！
         ),
-
         # 数据：沿用 LIBERO 的 DataConfig，但 repo_id 换成你自己的 Franka LeRobot 数据集
         data=MyFrankaDataConfig(
-
-            repo_id="wmx/openpi_red_1227_205_clean", 
-
+            repo_id="wmx/openpi_red_1227_205_clean",
             base_config=DataConfig(
                 # 如果在 LeRobot 数据里写了 task 字段，这里会自动用 task 文本当 prompt
                 prompt_from_task=True,
             ),
-
-           
             default_prompt="Put the red chili peppers into the basket.",
         ),
-
         # 初始化权重：从 π0 base checkpoint 加载
         # weight_loader=weight_loaders.CheckpointWeightLoader(
         #     "gs://openpi-assets/checkpoints/pi0_base/params"
         # ),
-
         weight_loader=weight_loaders.CheckpointWeightLoader(
             "/work/openpi_base_ckpt/openpi-assets/checkpoints/pi0_base/params"
         ),
-
-
         num_train_steps=10_0000,
         batch_size=192,
-
         # LoRA finetuning：只训练 LoRA / LN 等参数，关闭 EMA
         freeze_filter=pi0_config.Pi0Config(
             paligemma_variant="gemma_2b_lora",
             action_expert_variant="gemma_300m_lora",
         ).get_freeze_filter(),
-        ema_decay=None,# LoRA 微调时通常关闭 EMA
+        ema_decay=None,  # LoRA 微调时通常关闭 EMA
     ),
-
     TrainConfig(
         # 新名字，命令行里用这个：--config-name=pi05_franka_low_mem_finetune
         name="pi05_franka_low_mem_finetune",
         keep_period=1000,
-
         # 模型：在 pi0 LoRA 的基础上，多了 pi05=True & discrete_state_input=False
         model=pi0_config.Pi0Config(
-            pi05=True,                      # ✅ 打开 π0.5 分支（关键）
+            pi05=True,  # ✅ 打开 π0.5 分支（关键）
             paligemma_variant="gemma_2b_lora",
             action_expert_variant="gemma_300m_lora",
-            action_dim=32,                  # 和你现在 pi0 配置保持一致
+            action_dim=32,  # 和你现在 pi0 配置保持一致
             action_horizon=30,
-            discrete_state_input=False,     # 对齐官方 pi05_libero 设置
+            discrete_state_input=False,  # 对齐官方 pi05_libero 设置
         ),
-
         # 数据：沿用你的 MyFrankaDataConfig，不用改
         data=MyFrankaDataConfig(
-            repo_id="wmx/openpi_red_1227_205_clean", 
+            repo_id="wmx/openpi_red_1227_205_clean",
             base_config=DataConfig(
                 prompt_from_task=True,
             ),
             default_prompt="Put the red chili peppers into the basket.",
         ),
-
         # 权重加载：从 pi05_base 起步
         # 注意：路径要改成你本地存 pi05_base 的位置
         weight_loader=weight_loaders.CheckpointWeightLoader(
             "/work/openpi_base_ckpt/openpi-assets/checkpoints/pi05_base/params"
         ),
-
         # 训练超参：先和 pi0 一样，后面你可以再调
         num_train_steps=10_0000,
         batch_size=64,
-
         # LoRA 冻结规则：一定要用同样的 Pi0Config(pi05=True, ...) 来取 freeze_filter
         freeze_filter=pi0_config.Pi0Config(
             pi05=True,
             paligemma_variant="gemma_2b_lora",
             action_expert_variant="gemma_300m_lora",
         ).get_freeze_filter(),
-
         # LoRA 微调关掉 EMA
         ema_decay=None,
     ),
-    
-    
     # TrainConfig(
     #     name="pi0_tavla_franka_lora",
-        
     #     # 【修改 1】指定 LoRA 变体，并设置 Franka 维度 (7) 和 Force 类型
     #     model=pi0_config.Pi0Config(
     #         paligemma_variant="gemma_2b_lora",      # 匹配示例
     #         action_expert_variant="gemma_300m_lora",# 匹配示例
-            
     #         effort_type=EffortType.EXPERT_HIS_C,    # 你的力矩输入类型
-            
     #         # 【关键保留】虽然示例没写，但 Franka 必须写，否则维度报错
-    #         effort_dim=7, 
+    #         effort_dim=7,
     #         action_dim=7,
     #     ),
-        
     #     data=MyFrankaTavlaDataConfig(
     #         repo_id="wmx/openpi_merged_single_grasp_newest",
     #         # 配合 EXPERT_HIS_C，使用历史帧
-    #         effort_history=(-10, -5, 0), 
+    #         effort_history=(-10, -5, 0),
     #         default_prompt="pick up the object",
     #         use_delta_actions=True, # 注意 MyFrankaTavlaDataConfig 里定义的参数名是否是 use_delta_actions
-            
     #         # 本地数据集设置
     #         base_config=DataConfig(
     #             local_files_only=True,
     #         ),
     #     ),
-        
     #     weight_loader=weight_loaders.CheckpointWeightLoader("s3://openpi-assets/checkpoints/pi0_base/params"),
     #     num_train_steps=100_000,
-        
     #     # 【修改 2】添加 Freeze Filter，冻结非 LoRA 参数
     #     freeze_filter=pi0.Pi0Config(
-    #         paligemma_variant="gemma_2b_lora", 
+    #         paligemma_variant="gemma_2b_lora",
     #         action_expert_variant="gemma_300m_lora"
     #     ).get_freeze_filter(),
-        
     #     # 【修改 3】LoRA 通常关闭 EMA
-    #     ema_decay=None, 
+    #     ema_decay=None,
     # ),
-
     TrainConfig(
         name="pi0_fast_libero",
         # Here is an example of loading a pi0-FAST model for full finetuning.

@@ -330,8 +330,8 @@ class PadStatesAndActions(DataTransformFn):
 
     # 这里定义了它需要一个参数，dataclass 会自动生成 __init__(self, model_action_dim: int)
     # Python 的 @dataclasses.dataclass 装饰器帮我们自动生成了初始化代码（__init__），隐藏了赋值的过程。
-    model_action_dim: int #声明了这个类在被创建（实例化）时，必须接收一个整数参数
-    
+    model_action_dim: int  # 声明了这个类在被创建（实例化）时，必须接收一个整数参数
+
     def __call__(self, data: DataDict) -> DataDict:
         data["state"] = pad_to_dim(data["state"], self.model_action_dim, axis=-1)
         if "actions" in data:

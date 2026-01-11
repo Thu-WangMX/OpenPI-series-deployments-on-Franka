@@ -1,6 +1,7 @@
 import numpy as np
-from openpi.training import config as _config
+
 from openpi.policies import policy_config
+from openpi.training import config as _config
 
 # 1. 加载配置
 print("🔄 正在加载配置...")
@@ -20,18 +21,16 @@ example = {
     # 这里的 Key (observation/image) 必须和你训练配置里的 repack_transforms 匹配
     "observation/image": np.random.randint(0, 255, (224, 224, 3), dtype=np.uint8),
     "observation/wrist_image": np.random.randint(0, 255, (224, 224, 3), dtype=np.uint8),
-    
     # 状态：通常是关节角度 (7自由度 + 1夹爪 = 8维)
     "observation/state": np.zeros(8, dtype=np.float32),
-    
     # 文本指令
-    "prompt": "Put the red chili peppers into the basket"
+    "prompt": "Put the red chili peppers into the basket",
 }
 
 # 4. 运行推理
 print("🚀 开始推理...")
 result = policy.infer(example)
-print("result:" , result)
+print("result:", result)
 action_chunk = result["actions"]
 
 print("✅ 推理成功！")
